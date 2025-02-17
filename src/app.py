@@ -110,15 +110,34 @@ class FineTuningApp:
 def create_interface():
     app = FineTuningApp()
 
+    # Define model options with categories
+    llama_models = [
+        "meta-llama/Llama-2-7b-hf",
+        "meta-llama/Llama-2-13b-hf",
+        "meta-llama/Llama-2-70b-hf",
+        "meta-llama/Llama-2-7b-chat-hf",
+        "meta-llama/Llama-2-13b-chat-hf",
+        "meta-llama/Llama-2-70b-chat-hf"
+    ]
+
+    other_models = [
+        "facebook/opt-125m",
+        "EleutherAI/gpt-neo-125M",
+        "google/flan-t5-small"
+    ]
+
+    all_models = llama_models + other_models
+
     with gr.Blocks(title="LLM Fine-tuning Laboratory") as interface:
         gr.Markdown("# 🔬 LLM Fine-tuning Laboratory")
 
         with gr.Row():
             with gr.Column():
                 model_name = gr.Dropdown(
-                    choices=["facebook/opt-125m", "EleutherAI/gpt-neo-125M", "google/flan-t5-small"],
+                    choices=all_models,
                     label="Select Base Model",
-                    value="facebook/opt-125m"
+                    value="meta-llama/Llama-2-7b-hf",
+                    info="Choose from Llama 2 models or other available models"
                 )
                 load_model_btn = gr.Button("Load Model")
                 model_status = gr.Textbox(label="Model Status", interactive=False)

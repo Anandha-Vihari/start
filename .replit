@@ -17,26 +17,7 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "streamlit"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
 args = "gradio"
-
-[[workflows.workflow]]
-name = "streamlit"
-author = "agent"
-
-[workflows.workflow.metadata]
-agentRequireRestartOnSave = false
-
-[[workflows.workflow.tasks]]
-task = "packager.installForAll"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "streamlit run src/app.py"
-waitForPort = 5000
 
 [[workflows.workflow]]
 name = "gradio"
