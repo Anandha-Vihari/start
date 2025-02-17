@@ -1,8 +1,10 @@
 import torch
 import os
+import json
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 from peft import get_peft_model, LoraConfig, PrefixTuningConfig, PromptTuningConfig
 from peft import AdaLoraConfig, IA3Config
+from framework_converter import FrameworkConverter
 
 class ModelHandler:
     def __init__(self, model_name):
@@ -13,6 +15,7 @@ class ModelHandler:
             "pytorch": ["meta-llama", "facebook/opt", "EleutherAI"],
             "tensorflow": ["google/flan"]
         }
+        self.framework_converter = FrameworkConverter()
 
     def get_framework(self):
         """Determine the framework based on model name"""
@@ -100,6 +103,68 @@ class ModelHandler:
         self.model = get_peft_model(self.model, peft_config)
         return self.model
 
+    def export_model(self, save_path, target_framework=None):
+        """Export the model to the specified framework format"""
+        try:
+            if target_framework and target_framework not in self.framework_converter.supported_frameworks:
+                raise ValueError(f"Unsupported target framework: {target_framework}")
+
+            # Save model and tokenizer
+            os.makedirs(save_path, exist_ok=True)
+
+            # Save the model
+            self.framework_converter.save_model(
+                self.model,
+                os.path.join(save_path, "model"),
+                target_framework
+            )
+
+            # Save the tokenizer
+            self.tokenizer.save_pretrained(os.path.join(save_path, "tokenizer"))
+
+            # Save configuration
+            config = {
+                "model_name": self.model_name,
+                "framework": target_framework or self.get_framework(),
+                "device": self.device,
+                "model_config": self.model.config.to_dict() if hasattr(self.model, 'config') else {}
+            }
+
+            with open(os.path.join(save_path, "config.json"), 'w') as f:
+                json.dump(config, f, indent=2)
+
+            return True, "Model exported successfully"
+
+        except Exception as e:
+            return False, f"Error exporting model: {str(e)}"
+
+    def import_model(self, load_path, target_framework=None):
+        """Import a model from the specified path and optionally convert to target framework"""
+        try:
+            if target_framework and target_framework not in self.framework_converter.supported_frameworks:
+                raise ValueError(f"Unsupported target framework: {target_framework}")
+
+            # Load configuration
+            with open(os.path.join(load_path, "config.json"), 'r') as f:
+                config = json.load(f)
+
+            # Load model
+            model_path = os.path.join(load_path, "model")
+            self.model = self.framework_converter.load_model(
+                model_path,
+                target_framework
+            )
+
+            # Load tokenizer
+            tokenizer_path = os.path.join(load_path, "tokenizer")
+            self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+
+            self.model_name = config["model_name"]
+            return True, "Model imported successfully"
+
+        except Exception as e:
+            return False, f"Error importing model: {str(e)}"
+
     def get_model_info(self):
         """Get model information and capabilities"""
         return {
@@ -109,3 +174,7 @@ class ModelHandler:
             "parameters": sum(p.numel() for p in self.model.parameters()),
             "trainable_parameters": sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         }
+
+    def get_supported_export_formats(self):
+        """Get list of supported export formats"""
+        return self.framework_converter.get_supported_formats()
