@@ -2,7 +2,7 @@ import gradio as gr
 import torch
 from model_handler import ModelHandler
 from training_utils import Trainer
-from visualization import plot_training_metrics
+from visualization import plot_training_metrics, plot_training_history
 from dataset_handler import DatasetHandler
 from database.db_handler import DatabaseHandler
 import pandas as pd
@@ -19,7 +19,15 @@ class FineTuningApp:
         try:
             self.model_handler = ModelHandler(model_name)
             self.model = self.model_handler.load_model()
-            return f"Model {model_name} loaded successfully!"
+            model_info = self.model_handler.get_model_info()
+            info_text = (
+                f"Model loaded successfully!\n"
+                f"Framework: {model_info['framework']}\n"
+                f"Device: {model_info['device']}\n"
+                f"Total parameters: {model_info['parameters']:,}\n"
+                f"Trainable parameters: {model_info['trainable_parameters']:,}"
+            )
+            return info_text
         except Exception as e:
             return f"Error loading model: {str(e)}"
 
@@ -32,16 +40,28 @@ class FineTuningApp:
             df = dataset_handler.load_dataset(file.name)
             self.dataset = df
             preview = df.head().to_html()
-            return preview, "Dataset loaded successfully!"
+            stats = (
+                f"Dataset loaded successfully!\n"
+                f"Rows: {len(df):,}\n"
+                f"Columns: {', '.join(df.columns)}"
+            )
+            return preview, stats
         except Exception as e:
             return None, f"Error loading dataset: {str(e)}"
 
-    def train_model(self, model_name, peft_method, learning_rate, batch_size, num_epochs, progress=gr.Progress()):
+    def train_model(self, model_name, peft_method, peft_config, learning_rate, 
+                   batch_size, num_epochs, progress=gr.Progress()):
         try:
             if self.model is None:
                 return "Please load a model first", None
             if self.dataset is None:
                 return "Please upload a dataset first", None
+
+            # Parse PEFT configuration
+            try:
+                peft_params = eval(peft_config) if peft_config else {}
+            except:
+                peft_params = {}
 
             # Create experiment record
             experiment = self.db.create_experiment(
@@ -51,6 +71,9 @@ class FineTuningApp:
                 batch_size=int(batch_size),
                 num_epochs=int(num_epochs)
             )
+
+            # Apply PEFT method with custom configuration
+            self.model = self.model_handler.apply_peft(peft_method, **peft_params)
 
             trainer = Trainer(
                 model=self.model,
@@ -72,9 +95,9 @@ class FineTuningApp:
                 )
                 metrics_history.append(metrics)
 
-            # Create final plot
-            fig = plot_training_metrics(metrics_history[-1])
-            return "Training completed successfully!", fig
+            # Create final plots
+            history_fig = plot_training_history(metrics_history)
+            return "Training completed successfully!", history_fig
 
         except Exception as e:
             return f"Error during training: {str(e)}", None
@@ -96,13 +119,11 @@ class FineTuningApp:
 
             metrics = self.db.get_experiment_metrics(exp.id)
             if metrics:
-                metrics_data = {
-                    "loss": metrics[-1].loss,
-                    "epoch": metrics[-1].epoch,
-                    "learning_rate": exp.learning_rate
-                }
-                fig = plot_training_metrics(metrics_data)
-                html += f"<img src='{fig.to_image(format='png')}' />"
+                fig = plot_training_history([{
+                    "epoch": m.epoch,
+                    "loss": m.loss
+                } for m in metrics])
+                html += f"<div style='height: 300px;'>{fig.to_html()}</div>"
             html += "</div>"
         html += "</div>"
         return html
@@ -128,6 +149,14 @@ def create_interface():
 
     all_models = llama_models + other_models
 
+    peft_methods = [
+        "LoRA",
+        "AdaLoRA",
+        "Prefix Tuning",
+        "P-Tuning",
+        "IA3"
+    ]
+
     with gr.Blocks(title="LLM Fine-tuning Laboratory") as interface:
         gr.Markdown("# 🔬 LLM Fine-tuning Laboratory")
 
@@ -148,10 +177,18 @@ def create_interface():
 
             with gr.Column():
                 peft_method = gr.Dropdown(
-                    choices=["LoRA", "Prefix Tuning", "P-Tuning"],
+                    choices=peft_methods,
                     label="PEFT Method",
-                    value="LoRA"
+                    value="LoRA",
+                    info="Choose Parameter-Efficient Fine-Tuning method"
                 )
+
+                peft_config = gr.Textbox(
+                    label="PEFT Configuration (Optional)",
+                    info="Enter configuration as Python dict, e.g., {'r': 8, 'lora_alpha': 16}",
+                    placeholder="{'r': 16, 'lora_alpha': 32}"
+                )
+
                 learning_rate = gr.Slider(
                     minimum=1e-6,
                     maximum=1e-3,
@@ -159,6 +196,7 @@ def create_interface():
                     label="Learning Rate",
                     info="Select learning rate between 1e-6 and 1e-3"
                 )
+
                 batch_size = gr.Slider(
                     minimum=1,
                     maximum=32,
@@ -166,6 +204,7 @@ def create_interface():
                     step=1,
                     label="Batch Size"
                 )
+
                 num_epochs = gr.Slider(
                     minimum=1,
                     maximum=50,
@@ -173,7 +212,8 @@ def create_interface():
                     step=1,
                     label="Number of Epochs"
                 )
-                train_btn = gr.Button("Start Fine-tuning")
+
+                train_btn = gr.Button("Start Fine-tuning", variant="primary")
                 training_status = gr.Textbox(label="Training Status", interactive=False)
                 training_plot = gr.Plot(label="Training Progress")
 
@@ -196,7 +236,14 @@ def create_interface():
 
         train_btn.click(
             app.train_model,
-            inputs=[model_name, peft_method, learning_rate, batch_size, num_epochs],
+            inputs=[
+                model_name,
+                peft_method,
+                peft_config,
+                learning_rate,
+                batch_size,
+                num_epochs
+            ],
             outputs=[training_status, training_plot]
         )
 
