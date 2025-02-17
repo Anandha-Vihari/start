@@ -5,6 +5,7 @@ from training_utils import Trainer
 from visualization import plot_training_metrics, plot_training_history
 from dataset_handler import DatasetHandler
 from database.db_handler import DatabaseHandler
+from hyperparameter_tuning import HyperparameterTuner, ModelEvaluator
 import pandas as pd
 import plotly.graph_objects as go
 
@@ -14,6 +15,7 @@ class FineTuningApp:
         self.model = None
         self.dataset = None
         self.model_handler = None
+        self.best_hyperparameters = None
 
     def load_model(self, model_name):
         try:
@@ -49,8 +51,49 @@ class FineTuningApp:
         except Exception as e:
             return None, f"Error loading dataset: {str(e)}"
 
+    def optimize_hyperparameters(self, n_trials=20, progress=gr.Progress()):
+        """Run hyperparameter optimization"""
+        try:
+            if self.model is None or self.dataset is None:
+                return "Please load both model and dataset first", None
+
+            tuner = HyperparameterTuner(
+                model_handler=self.model_handler,
+                dataset=self.dataset,
+                n_trials=n_trials
+            )
+
+            with progress(total=n_trials) as p:
+                results = tuner.optimize()
+                p.update(1)
+
+            self.best_hyperparameters = results['best_params']
+
+            # Create visualization of optimization history
+            history_df = results['optimization_history']
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=history_df.index,
+                y=history_df['value'],
+                mode='lines+markers',
+                name='Validation Loss'
+            ))
+            fig.update_layout(
+                title='Hyperparameter Optimization History',
+                xaxis_title='Trial',
+                yaxis_title='Validation Loss'
+            )
+
+            params_text = "\n".join([
+                f"{k}: {v}" for k, v in results['best_params'].items()
+            ])
+            return f"Best hyperparameters found:\n{params_text}", fig
+
+        except Exception as e:
+            return f"Error during hyperparameter optimization: {str(e)}", None
+
     def train_model(self, model_name, peft_method, peft_config, learning_rate, 
-                   batch_size, num_epochs, progress=gr.Progress()):
+                   batch_size, num_epochs, use_optimal_params=False, progress=gr.Progress()):
         try:
             if self.model is None:
                 return "Please load a model first", None
@@ -58,10 +101,19 @@ class FineTuningApp:
                 return "Please upload a dataset first", None
 
             # Parse PEFT configuration
-            try:
-                peft_params = eval(peft_config) if peft_config else {}
-            except:
-                peft_params = {}
+            if use_optimal_params and self.best_hyperparameters:
+                peft_params = {
+                    'r': self.best_hyperparameters['lora_r'],
+                    'lora_alpha': self.best_hyperparameters['lora_alpha'],
+                    'lora_dropout': self.best_hyperparameters['lora_dropout']
+                }
+                learning_rate = self.best_hyperparameters['learning_rate']
+                batch_size = self.best_hyperparameters['batch_size']
+            else:
+                try:
+                    peft_params = eval(peft_config) if peft_config else {}
+                except:
+                    peft_params = {}
 
             # Create experiment record
             experiment = self.db.create_experiment(
@@ -95,9 +147,19 @@ class FineTuningApp:
                 )
                 metrics_history.append(metrics)
 
+            # Evaluate model
+            evaluator = ModelEvaluator(self.model, self.dataset)
+            eval_metrics = evaluator.evaluate()
+
             # Create final plots
             history_fig = plot_training_history(metrics_history)
-            return "Training completed successfully!", history_fig
+
+            # Add evaluation metrics to the response
+            metrics_text = "\n".join([
+                f"{k}: {v:.4f}" for k, v in eval_metrics.items()
+            ])
+
+            return f"Training completed successfully!\n\nEvaluation Metrics:\n{metrics_text}", history_fig
 
         except Exception as e:
             return f"Error during training: {str(e)}", None
@@ -160,62 +222,84 @@ def create_interface():
     with gr.Blocks(title="LLM Fine-tuning Laboratory") as interface:
         gr.Markdown("# 🔬 LLM Fine-tuning Laboratory")
 
-        with gr.Row():
-            with gr.Column():
-                model_name = gr.Dropdown(
-                    choices=all_models,
-                    label="Select Base Model",
-                    value="meta-llama/Llama-2-7b-hf",
-                    info="Choose from Llama 2 models or other available models"
-                )
-                load_model_btn = gr.Button("Load Model")
-                model_status = gr.Textbox(label="Model Status", interactive=False)
+        with gr.Tab("Model Selection"):
+            with gr.Row():
+                with gr.Column():
+                    model_name = gr.Dropdown(
+                        choices=all_models,
+                        label="Select Base Model",
+                        value="meta-llama/Llama-2-7b-hf",
+                        info="Choose from Llama 2 models or other available models"
+                    )
+                    load_model_btn = gr.Button("Load Model")
+                    model_status = gr.Textbox(label="Model Status", interactive=False)
 
-                dataset_upload = gr.File(label="Upload Training Data (CSV)")
-                dataset_preview = gr.HTML(label="Dataset Preview")
-                dataset_status = gr.Textbox(label="Dataset Status", interactive=False)
+                    dataset_upload = gr.File(label="Upload Training Data (CSV)")
+                    dataset_preview = gr.HTML(label="Dataset Preview")
+                    dataset_status = gr.Textbox(label="Dataset Status", interactive=False)
 
-            with gr.Column():
-                peft_method = gr.Dropdown(
-                    choices=peft_methods,
-                    label="PEFT Method",
-                    value="LoRA",
-                    info="Choose Parameter-Efficient Fine-Tuning method"
-                )
+        with gr.Tab("Hyperparameter Tuning"):
+            with gr.Row():
+                with gr.Column():
+                    n_trials = gr.Slider(
+                        minimum=5,
+                        maximum=50,
+                        value=20,
+                        step=5,
+                        label="Number of Optimization Trials"
+                    )
+                    optimize_btn = gr.Button("Start Hyperparameter Optimization")
+                    optimization_status = gr.Textbox(label="Optimization Status", interactive=False)
+                    optimization_plot = gr.Plot(label="Optimization Progress")
 
-                peft_config = gr.Textbox(
-                    label="PEFT Configuration (Optional)",
-                    info="Enter configuration as Python dict, e.g., {'r': 8, 'lora_alpha': 16}",
-                    placeholder="{'r': 16, 'lora_alpha': 32}"
-                )
+        with gr.Tab("Training"):
+            with gr.Row():
+                with gr.Column():
+                    peft_method = gr.Dropdown(
+                        choices=peft_methods,
+                        label="PEFT Method",
+                        value="LoRA",
+                        info="Choose Parameter-Efficient Fine-Tuning method"
+                    )
 
-                learning_rate = gr.Slider(
-                    minimum=1e-6,
-                    maximum=1e-3,
-                    value=1e-4,
-                    label="Learning Rate",
-                    info="Select learning rate between 1e-6 and 1e-3"
-                )
+                    peft_config = gr.Textbox(
+                        label="PEFT Configuration (Optional)",
+                        info="Enter configuration as Python dict, e.g., {'r': 8, 'lora_alpha': 16}",
+                        placeholder="{'r': 16, 'lora_alpha': 32}"
+                    )
 
-                batch_size = gr.Slider(
-                    minimum=1,
-                    maximum=32,
-                    value=8,
-                    step=1,
-                    label="Batch Size"
-                )
+                    use_optimal_params = gr.Checkbox(
+                        label="Use Optimal Hyperparameters",
+                        info="Use the best parameters found during optimization"
+                    )
 
-                num_epochs = gr.Slider(
-                    minimum=1,
-                    maximum=50,
-                    value=3,
-                    step=1,
-                    label="Number of Epochs"
-                )
+                    learning_rate = gr.Slider(
+                        minimum=1e-6,
+                        maximum=1e-3,
+                        value=1e-4,
+                        label="Learning Rate",
+                        info="Select learning rate between 1e-6 and 1e-3"
+                    )
 
-                train_btn = gr.Button("Start Fine-tuning", variant="primary")
-                training_status = gr.Textbox(label="Training Status", interactive=False)
-                training_plot = gr.Plot(label="Training Progress")
+                    batch_size = gr.Slider(
+                        minimum=1,
+                        maximum=32,
+                        value=8,
+                        step=1,
+                        label="Batch Size"
+                    )
+
+                    num_epochs = gr.Slider(
+                        minimum=1,
+                        maximum=50,
+                        value=3,
+                        step=1,
+                        label="Number of Epochs"
+                    )
+
+                    train_btn = gr.Button("Start Fine-tuning", variant="primary")
+                    training_status = gr.Textbox(label="Training Status", interactive=False)
+                    training_plot = gr.Plot(label="Training Progress")
 
         with gr.Tab("Previous Experiments"):
             refresh_btn = gr.Button("Refresh Experiments")
@@ -234,6 +318,12 @@ def create_interface():
             outputs=[dataset_preview, dataset_status]
         )
 
+        optimize_btn.click(
+            app.optimize_hyperparameters,
+            inputs=[n_trials],
+            outputs=[optimization_status, optimization_plot]
+        )
+
         train_btn.click(
             app.train_model,
             inputs=[
@@ -242,7 +332,8 @@ def create_interface():
                 peft_config,
                 learning_rate,
                 batch_size,
-                num_epochs
+                num_epochs,
+                use_optimal_params
             ],
             outputs=[training_status, training_plot]
         )
