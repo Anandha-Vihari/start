@@ -1,6 +1,5 @@
 import torch
 import os
-import json
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 from peft import get_peft_model, LoraConfig, PrefixTuningConfig, PromptTuningConfig
 from peft import AdaLoraConfig, IA3Config
@@ -9,13 +8,24 @@ from framework_converter import FrameworkConverter
 class ModelHandler:
     def __init__(self, model_name):
         self.model_name = model_name
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = self._setup_device()
         self.auth_token = os.getenv("HUGGING_FACE_TOKEN")
         self.supported_frameworks = {
             "pytorch": ["meta-llama", "facebook/opt", "EleutherAI"],
             "tensorflow": ["google/flan"]
         }
         self.framework_converter = FrameworkConverter()
+
+    def _setup_device(self):
+        """Setup compute device with proper memory handling"""
+        if torch.cuda.is_available():
+            # Get GPU memory info
+            gpu_memory = torch.cuda.get_device_properties(0).total_memory
+            # Use mixed precision for large models
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            return "cuda"
+        return "cpu"
 
     def get_framework(self):
         """Determine the framework based on model name"""
@@ -31,10 +41,13 @@ class ModelHandler:
             if "meta-llama" in self.model_name and not self.auth_token:
                 raise Exception("Hugging Face token is required for Llama models")
 
+            # Configure device mapping and precision
+            dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
             model_kwargs = {
-                "torch_dtype": torch.float16 if self.device == "cuda" else torch.float32,
+                "torch_dtype": dtype,
                 "token": self.auth_token,
-                "device_map": "auto" if self.device == "cuda" else None
+                "device_map": "auto" if self.device == "cuda" else None,
+                "low_cpu_mem_usage": True
             }
 
             # Load model based on task
@@ -167,12 +180,20 @@ class ModelHandler:
 
     def get_model_info(self):
         """Get model information and capabilities"""
+        gpu_info = ""
+        if self.device == "cuda":
+            props = torch.cuda.get_device_properties(0)
+            total_memory = props.total_memory / (1024**3)  # Convert to GB
+            used_memory = torch.cuda.memory_allocated(0) / (1024**3)
+            gpu_info = f"\nGPU: {props.name}\nMemory: {used_memory:.2f}GB / {total_memory:.2f}GB"
+
         return {
             "name": self.model_name,
             "framework": self.get_framework(),
-            "device": self.device,
+            "device": f"{self.device.upper()}{gpu_info}",
             "parameters": sum(p.numel() for p in self.model.parameters()),
-            "trainable_parameters": sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            "trainable_parameters": sum(p.numel() for p in self.model.parameters() if p.requires_grad),
+            "dtype": str(next(self.model.parameters()).dtype)
         }
 
     def get_supported_export_formats(self):
