@@ -1,5 +1,7 @@
 import gradio as gr
 import torch
+import os
+import requests
 from model_handler import ModelHandler
 from training_utils import Trainer
 from visualization import plot_training_metrics, plot_training_history
@@ -30,6 +32,24 @@ class FineTuningApp:
 
     def load_model(self, model_name):
         try:
+            # Check if trying to load a Llama model
+            if "meta-llama" in model_name:
+                # Verify Hugging Face token
+                token = os.getenv("HUGGING_FACE_TOKEN")
+                if not token:
+                    return ("Error: Hugging Face token is required for Llama models. "
+                           "Please set your HUGGING_FACE_TOKEN environment variable.")
+
+                # Check if token has access to Llama models
+                headers = {"Authorization": f"Bearer {token}"}
+                response = requests.head(
+                    f"https://huggingface.co/{model_name}",
+                    headers=headers
+                )
+                if response.status_code == 401:
+                    return ("Error: Your Hugging Face token doesn't have access to Llama models. "
+                           "Please request access at https://huggingface.co/meta-llama")
+
             self.model_handler = ModelHandler(model_name)
             self.model = self.model_handler.load_model()
             model_info = self.model_handler.get_model_info()
@@ -298,6 +318,14 @@ def create_interface():
 
     # Define available options
     models = [
+        # Llama family models
+        "meta-llama/Llama-2-7b-hf",
+        "meta-llama/Llama-2-13b-hf",
+        "meta-llama/Llama-2-70b-hf",
+        "meta-llama/Llama-2-7b-chat-hf",
+        "meta-llama/Llama-2-13b-chat-hf",
+        "meta-llama/Llama-2-70b-chat-hf",
+        # Other base models
         "facebook/opt-125m",
         "EleutherAI/gpt-neo-125M",
         "google/flan-t5-small"
