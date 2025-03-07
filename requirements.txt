@@ -1,0 +1,14 @@
+scikit-learn
+sqlalchemy
+gradio
+pandas
+tqdm
+peft
+psycopg2-binary
+joblib
+nltk
+plotly
+torch
+transformers
+numpy
+optuna
