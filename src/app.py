@@ -12,6 +12,8 @@ from data_augmentation import DataAugmentor
 import pandas as pd
 import plotly.graph_objects as go
 from framework_converter import FrameworkConverter
+from huggingface_hub import HfApi
+
 
 class FineTuningApp:
     def __init__(self):
@@ -30,25 +32,37 @@ class FineTuningApp:
             frameworks.append("TensorFlow")
         return frameworks
 
+    def has_access_to_model(self, model_name, token):
+        api = HfApi()
+        try:
+            api.model_info(model_name, token=token)
+            return True
+        except Exception as e:
+            print(f"Error checking model access: {str(e)}")
+            return False
+
     def load_model(self, model_name):
         try:
             # Check if trying to load a Llama model
             if "meta-llama" in model_name:
-                # Verify Hugging Face token
                 token = os.getenv("HUGGING_FACE_TOKEN")
                 if not token:
                     return ("Error: Hugging Face token is required for Llama models. "
-                           "Please set your HUGGING_FACE_TOKEN environment variable.")
+                            "Please set your HUGGING_FACE_TOKEN environment variable.")
 
-                # Check if token has access to Llama models
-                headers = {"Authorization": f"Bearer {token}"}
-                response = requests.head(
-                    f"https://huggingface.co/{model_name}",
-                    headers=headers
-                )
-                if response.status_code == 401:
+                # Verify token access
+                if not self.has_access_to_model(model_name, token):
                     return ("Error: Your Hugging Face token doesn't have access to Llama models. "
-                           "Please request access at https://huggingface.co/meta-llama")
+                            "Please request access at https://huggingface.co/meta-llama")
+
+            self.model_handler = ModelHandler(model_name)
+            self.model = self.model_handler.load_model()
+            model_info = self.model_handler.get_model_info()
+
+            return f"Model {model_name} loaded successfully!"
+
+        except Exception as e:
+            return f"Error loading model: {str(e)}"
 
             self.model_handler = ModelHandler(model_name)
             self.model = self.model_handler.load_model()
